@@ -280,58 +280,36 @@ class SparkAPI(DatabaseAPI[spark_df]):
     def _break_lineage_and_repartition(self, spark_df, templated_name, physical_name):
         spark_df = self._repartition_if_needed(spark_df, templated_name)
 
-        regex_to_persist = [
-            r"__splink__df_comparison_vectors",
-            r"__splink__df_concat_sample",
-            r"__splink__df_concat_with_tf",
-            r"__splink__df_predict",
-            r"__splink__df_tf_.+",
-            r"__splink__df_representatives.*",
-            r"__splink__representatives.*",
-            r"__splink__df_neighbours",
-            r"__splink__df_connected_components_df",
-            r"__splink__blocked_id_pairs",
-            r"__splink__marginal_exploded_ids_blocking_rule.*",
-            r"__splink__nodes_in_play",
-            r"__splink__edges_in_play",
-            r"__splink__clusters_at_threshold",
-            r"__splink__distinct_clusters_at_threshold",
-            r"__splink__clusters_at_all_thresholds",
-            r"__splink__clustering_output_final",
-            r"__splink__stable_nodes_at_new_threshold",
-        ]
-
-        if re.fullmatch(r"|".join(regex_to_persist), templated_name):
-            if self.break_lineage_method == "persist":
-                spark_df = spark_df.persist()
-                logger.debug(f"persisted {templated_name}")
-            elif self.break_lineage_method == "checkpoint":
-                spark_df = spark_df.checkpoint()
-                logger.debug(f"Checkpointed {templated_name}")
-            elif self.break_lineage_method == "parquet":
-                checkpoint_dir = self._get_checkpoint_dir_path(spark_df)
-                write_path = os.path.join(checkpoint_dir, physical_name)
-                spark_df.write.mode("overwrite").parquet(write_path)
-                spark_df = self.spark.read.parquet(write_path)
-                logger.debug(f"Wrote {templated_name} to parquet")
-            elif self.break_lineage_method == "delta_lake_files":
-                checkpoint_dir = self._get_checkpoint_dir_path(spark_df)
-                write_path = os.path.join(checkpoint_dir, physical_name)
-                spark_df.write.mode("overwrite").format("delta").save()
-                spark_df = self.spark.read.format("delta").load(write_path)
-                logger.debug(f"Wrote {templated_name} to Delta files at {write_path}")
-            elif self.break_lineage_method == "delta_lake_table":
-                write_path = f"{self.splink_data_store}.{physical_name}"
-                spark_df.write.mode("overwrite").saveAsTable(write_path)
-                spark_df = self.spark.table(write_path)
-                logger.debug(
-                    f"Wrote {templated_name} to Delta Table at "
-                    f"{self.splink_data_store}.{physical_name}"
-                )
-            else:
-                raise ValueError(
-                    f"Unknown break_lineage_method: {self.break_lineage_method}"
-                )
+        if self.break_lineage_method == "persist":
+            spark_df = spark_df.persist()
+            logger.debug(f"persisted {templated_name}")
+        elif self.break_lineage_method == "checkpoint":
+            spark_df = spark_df.checkpoint()
+            logger.debug(f"Checkpointed {templated_name}")
+        elif self.break_lineage_method == "parquet":
+            checkpoint_dir = self._get_checkpoint_dir_path(spark_df)
+            write_path = os.path.join(checkpoint_dir, physical_name)
+            spark_df.write.mode("overwrite").parquet(write_path)
+            spark_df = self.spark.read.parquet(write_path)
+            logger.debug(f"Wrote {templated_name} to parquet")
+        elif self.break_lineage_method == "delta_lake_files":
+            checkpoint_dir = self._get_checkpoint_dir_path(spark_df)
+            write_path = os.path.join(checkpoint_dir, physical_name)
+            spark_df.write.mode("overwrite").format("delta").save()
+            spark_df = self.spark.read.format("delta").load(write_path)
+            logger.debug(f"Wrote {templated_name} to Delta files at {write_path}")
+        elif self.break_lineage_method == "delta_lake_table":
+            write_path = f"{self.splink_data_store}.{physical_name}"
+            spark_df.write.mode("overwrite").saveAsTable(write_path)
+            spark_df = self.spark.table(write_path)
+            logger.debug(
+                f"Wrote {templated_name} to Delta Table at "
+                f"{self.splink_data_store}.{physical_name}"
+            )
+        else:
+            raise ValueError(
+                f"Unknown break_lineage_method: {self.break_lineage_method}"
+            )
 
         if templated_name == "__splink__blocked_id_pairs":
             spark_df = spark_df.repartition(self.num_partitions_on_repartition)
