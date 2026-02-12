@@ -99,7 +99,7 @@ class LinkerTraining:
                 )
             )
 
-        pd_df = _cumulative_comparisons_to_be_scored_from_blocking_rules(
+        records = _cumulative_comparisons_to_be_scored_from_blocking_rules(
             splink_df_dict=self._linker._input_tables_dict,
             blocking_rules=blocking_rules,
             link_type=self._linker._settings_obj._link_type,
@@ -108,8 +108,6 @@ class LinkerTraining:
             unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
             source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
         )
-
-        records = pd_df.to_dict(orient="records")
 
         summary_record = records[-1]
         num_observed_matches = summary_record["cumulative_rows"]
@@ -163,7 +161,11 @@ class LinkerTraining:
         )
 
     def estimate_u_using_random_sampling(
-        self, max_pairs: float = 1e6, seed: int = None
+        self,
+        max_pairs: float = 1e6,
+        seed: int | None = None,
+        min_count_per_level: int | None = 100,
+        num_chunks: int = 10,
     ) -> None:
         """Estimate the u parameters of the linkage model using random sampling.
 
@@ -190,6 +192,12 @@ class LinkerTraining:
             seed (int): Seed for random sampling. Assign to get reproducible u
                 probabilities. Note, seed for random sampling is only supported for
                 DuckDB and Spark, for SQLite set to None.
+            min_count_per_level (int | None): Minimum number of u observations
+                required for each comparison level before stopping estimation early.
+                If None, disables early stopping (all chunks are processed).
+                Defaults to 100.
+            num_chunks (int): Number of chunks to split the workload while estimating u.
+                If set to 1, disables the probe phase. Defaults to 10.
 
         Examples:
             ```py
@@ -209,7 +217,13 @@ class LinkerTraining:
                 "result in more accurate estimates, but with a longer run time."
             )
 
-        estimate_u_values(self._linker, max_pairs, seed)
+        estimate_u_values(
+            self._linker,
+            max_pairs=max_pairs,
+            seed=seed,
+            min_count_per_level=min_count_per_level,
+            num_chunks=num_chunks,
+        )
         self._linker._populate_m_u_from_trained_values()
 
         self._linker._settings_obj._columns_without_estimated_parameters_message()
