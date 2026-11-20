@@ -37,16 +37,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _estimate_u_comparison_vector_sqls(
-    *,
-    db_api: "DatabaseAPISubClass",
+def _estimate_u_blocked_id_pairs_sqls(
     input_tablename_l: str,
     input_tablename_r: str,
     link_type: LinkTypeLiteralType,
     source_dataset_input_column: "InputColumn | None",
     unique_id_input_column: "InputColumn",
     blocking_cols: list[str],
-    cv_cols: list[str],
     rhs_chunk_num: int,
     rhs_num_chunks: int,
 ) -> list[dict[str, str]]:
@@ -80,9 +77,9 @@ def _estimate_u_comparison_vector_sqls(
             "'0' as match_key",
         ]
     )
-    blocked_sql = f"""
+    sql = f"""
     select
-{blocked_cols_expr}
+    {blocked_cols_expr}
     from {input_tablename_l} as l
     inner join {input_tablename_r} as r
     on
@@ -90,10 +87,18 @@ def _estimate_u_comparison_vector_sqls(
     {where_condition}
     """
 
+    return [
+        {"sql": sql, "output_table_name": "__splink__blocked_id_pairs"},
+    ]
+
+
+def _estimate_u_comparison_vector_sqls(
+    cv_cols: list[str],
+) -> list[dict[str, str]]:
     cv_cols_expr = ",\n".join(indent_sql(col) for col in cv_cols)
     cv_sql = f"""
     select
-{cv_cols_expr}
+    {cv_cols_expr}
     from __splink__blocked_id_pairs
     """
 
@@ -226,62 +231,24 @@ def _accumulate_u_counts_from_chunk_and_check_min_count(
     if split_sqls:
         pipeline.enqueue_list_of_sqls(split_sqls)
 
-    unique_id_columns = [unique_id_input_column]
-    if source_dataset_input_column is not None:
-        unique_id_columns = [source_dataset_input_column, *unique_id_columns]
-
-    where_condition = _sql_gen_where_condition(
-        link_type,
-        unique_id_columns,
-    )
-
-    uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
-    uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
-
-    # An equijoin samples pairs across both inputs without a Cartesian product.
-    # Different offsets select disjoint pairs, including when records are reused.
-    num_buckets = rhs_num_chunks
-    join_condition = (
-        f"l.__splink__u_hash_l % {num_buckets} = "
-        f"(r.__splink__u_hash_r % {num_buckets} + {rhs_chunk_num - 1}) "
-        f"% {num_buckets}"
-    )
-
-    blocked_cols_expr = ",\n".join(
-        indent_sql(col)
-        for col in [
-            f"{uid_l_expr} as join_key_l",
-            f"{uid_r_expr} as join_key_r",
-            *blocking_cols,
-            "'0' as match_key",
-        ]
-    )
-    blocked_sql = f"""
-    select
-    {blocked_cols_expr}
-    from {input_tablename_sample_l} as l
-    inner join {input_tablename_sample_r} as r
-    on
-    {join_condition}
-    {where_condition}
-    """
-
-    pipeline.enqueue_sql(blocked_sql, "__splink__blocked_id_pairs")
-    blocked_pairs = db_api.sql_pipeline_to_splink_dataframe(pipeline)
-
-    pipeline = CTEPipeline([df_sample, blocked_pairs])
-
-    comparison_vector_sqls = _estimate_u_comparison_vector_sqls(
-        db_api=db_api,
+    blocked_sqls = _estimate_u_blocked_id_pairs_sqls(
         input_tablename_l=input_tablename_sample_l,
         input_tablename_r=input_tablename_sample_r,
         link_type=link_type,
         source_dataset_input_column=source_dataset_input_column,
         unique_id_input_column=unique_id_input_column,
         blocking_cols=blocking_cols,
-        cv_cols=cv_cols,
         rhs_chunk_num=rhs_chunk_num,
         rhs_num_chunks=rhs_num_chunks,
+   )
+
+    pipeline.enqueue_list_of_sqls(blocked_sqls)
+    blocked_pairs = db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    pipeline = CTEPipeline([blocked_pairs])
+
+    comparison_vector_sqls = _estimate_u_comparison_vector_sqls(
+        cv_cols=cv_cols,
     )
 
     pipeline.enqueue_list_of_sqls(comparison_vector_sqls)
