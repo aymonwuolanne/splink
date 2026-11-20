@@ -98,7 +98,6 @@ def _estimate_u_comparison_vector_sqls(
     """
 
     return [
-        {"sql": blocked_sql, "output_table_name": "__splink__blocked_id_pairs"},
         {"sql": cv_sql, "output_table_name": "__splink__df_comparison_vectors"},
     ]
 
@@ -227,6 +226,51 @@ def _accumulate_u_counts_from_chunk_and_check_min_count(
     if split_sqls:
         pipeline.enqueue_list_of_sqls(split_sqls)
 
+    unique_id_columns = [unique_id_input_column]
+    if source_dataset_input_column is not None:
+        unique_id_columns = [source_dataset_input_column, *unique_id_columns]
+
+    where_condition = _sql_gen_where_condition(
+        link_type,
+        unique_id_columns,
+    )
+
+    uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
+    uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
+
+    # An equijoin samples pairs across both inputs without a Cartesian product.
+    # Different offsets select disjoint pairs, including when records are reused.
+    num_buckets = rhs_num_chunks
+    join_condition = (
+        f"l.__splink__u_hash_l % {num_buckets} = "
+        f"(r.__splink__u_hash_r % {num_buckets} + {rhs_chunk_num - 1}) "
+        f"% {num_buckets}"
+    )
+
+    blocked_cols_expr = ",\n".join(
+        indent_sql(col)
+        for col in [
+            f"{uid_l_expr} as join_key_l",
+            f"{uid_r_expr} as join_key_r",
+            *blocking_cols,
+            "'0' as match_key",
+        ]
+    )
+    blocked_sql = f"""
+    select
+    {blocked_cols_expr}
+    from {input_tablename_sample_l} as l
+    inner join {input_tablename_sample_r} as r
+    on
+    {join_condition}
+    {where_condition}
+    """
+
+    pipeline.enqueue_sql(blocked_sql, "__splink__blocked_id_pairs")
+    blocked_pairs = db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    pipeline = CTEPipeline([df_sample, blocked_pairs])
+
     comparison_vector_sqls = _estimate_u_comparison_vector_sqls(
         db_api=db_api,
         input_tablename_l=input_tablename_sample_l,
@@ -260,6 +304,7 @@ def _accumulate_u_counts_from_chunk_and_check_min_count(
         chunk_counts = df_params.as_record_list()
     finally:
         df_params.drop_table_from_database_and_remove_from_cache()
+        blocked_pairs.drop_table_from_database_and_remove_from_cache()
 
     # Drop lambda row: it isn't additive and we don't use it here anyway
     chunk_counts = [
